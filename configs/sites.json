@@ -1,0 +1,10 @@
+[
+  {
+    "url": "https://cursor.com/",
+    "patterns": ["/blog", "/posts"]
+  },
+  {
+    "url": "https://composio.dev/",
+    "patterns": ["/blog", "/posts"]
+  }
+]

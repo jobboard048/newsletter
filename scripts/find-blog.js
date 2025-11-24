@@ -230,8 +230,8 @@ async function main() {
       const cfgOutDir = rawJson && rawJson.outputDir && typeof rawJson.outputDir === 'string' ? rawJson.outputDir : null;
       const base = path.basename(inPath, path.extname(inPath));
       const fileName = base + '.results.json';
-      // Default to project's `outputs` directory when no outputDir is provided
-      const defaultOutDir = path.resolve(process.cwd(), 'outputs');
+      // Default to a separate outputs subfolder for find-blog results when no outputDir is provided
+      const defaultOutDir = path.resolve(process.cwd(), 'outputs', 'find-blog-results');
       const outDir = cliOutDir || cfgOutDir || defaultOutDir;
       await fs.mkdir(outDir, { recursive: true });
       outputPath = path.join(outDir, fileName);

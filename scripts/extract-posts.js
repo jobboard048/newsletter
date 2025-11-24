@@ -40,7 +40,9 @@ async function callGpt5Nano(client, pageUrl, cleanedHtml) {
 
   const body = {
     model: 'gpt-5-nano',
-    input: `${prompt}\n\nHTML:\n${truncated}`
+    input: `${prompt}\n\nHTML:\n${truncated}`,
+    service_tier: "flex",
+    reasoning: { effort: "high" },
   };
 
   const r = await client.responses.create(body);
@@ -73,10 +75,10 @@ async function callGpt5Nano(client, pageUrl, cleanedHtml) {
 }
 
 async function main() {
-  const inPath = process.argv[2] || path.join('outputs','sites.results.json');
+  const inPath = process.argv[2] || path.join('outputs', 'sites.results.json');
   const outDirArg = process.argv[3];
-  // Default to a dedicated extracted posts folder inside outputs
-  const outDir = outDirArg || path.join(process.cwd(), 'outputs', 'extracted-posts');
+  // Default to writing per-site files into `outputs/extracted-posts` unless a different directory is provided.
+  const outDir = path.join(process.cwd(), outDirArg || path.join('outputs', 'extracted-posts'));
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -89,7 +91,7 @@ async function main() {
   let data;
   try { data = JSON.parse(await fs.readFile(inPath, 'utf8')); } catch (e) { console.error('Failed to read results JSON:', e.message); process.exit(2); }
 
-  await fs.mkdir(outDir, { recursive: true });
+  if (outDir) await fs.mkdir(outDir, { recursive: true });
 
   const browser = await playwright.chromium.launch({ headless: true });
   const api = await playwright.request.newContext();
@@ -103,6 +105,7 @@ async function main() {
     const matches = Array.isArray(entry.matches) ? entry.matches : [];
     if (!matches.length) continue;
 
+    const extractedForEntry = [];
     for (let j = 0; j < matches.length; j++) {
       const blogUrl = ensureUrl(matches[j]);
       console.error(`Processing: ${blogUrl}`);
@@ -150,12 +153,27 @@ async function main() {
           }
         }
 
-        const base = blogUrl.replace(/https?:\/\//, '').replace(/[^a-z0-9]/gi, '_').replace(/_+$/, '');
-        const outPath = path.join(outDir, `posts_${base}.json`);
-        await fs.writeFile(outPath, JSON.stringify({ source: blogUrl, extracted: posts, usage }, null, 2), 'utf8');
-        console.error(`Saved extracted posts to ${outPath}`);
+        if (outDir) {
+          const base = blogUrl.replace(/https?:\/\//, '').replace(/[^a-z0-9]/gi, '_').replace(/_+$/, '');
+          const outPath = path.join(outDir, `posts_${base}.json`);
+          await fs.writeFile(outPath, JSON.stringify({ source: blogUrl, extracted: posts, usage }, null, 2), 'utf8');
+          console.error(`Saved extracted posts to ${outPath}`);
+        } else {
+          // Collect into the entry to write back into the input JSON later
+          extractedForEntry.push({ source: blogUrl, extracted: posts, usage });
+          console.error(`Collected ${posts.length} posts for ${blogUrl}`);
+        }
       } catch (err) {
         console.error(`Error processing ${blogUrl}:`, err && err.message ? err.message : err);
+      }
+    }
+
+    // If we're not writing per-site files, attach the collected extracted posts to the entry
+    if (!outDir) {
+      try {
+        data[i].extracted = extractedForEntry;
+      } catch (e) {
+        console.error('Failed to attach extracted results to data entry:', e && e.message ? e.message : e);
       }
     }
   }

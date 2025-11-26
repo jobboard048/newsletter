@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>{{subject}}</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Roboto, 'Segoe UI', Arial, sans-serif; color: #111; }
+      .container { max-width: 680px; margin: 24px auto; padding: 0 16px; }
+      .header { border-bottom: 1px solid #eee; padding-bottom: 12px; margin-bottom: 18px; }
+      h1 { font-size: 20px; margin: 0 0 6px 0; }
+      p.lead { margin: 0 0 16px 0; color: #555; }
+      .post { padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
+      .post:last-child { border-bottom: none; }
+      .post h2 { margin: 0 0 6px 0; font-size: 16px; }
+      .meta { color: #777; font-size: 13px; margin-bottom: 6px; }
+      a.cta { display:inline-block; margin-top:8px; color:#fff; background:#0b67ff; padding:8px 12px; border-radius:6px; text-decoration:none; }
+      .footer { color:#777; font-size:13px; margin-top:18px; border-top:1px solid #eee; padding-top:12px; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>{{subject}}</h1>
+        {{#if intro}}<p class="lead">{{intro}}</p>{{/if}}
+      </div>
+
+      {{#each posts}}
+        <div class="post">
+          <div class="meta">{{source_date}}{{#if date}} • {{date}}{{/if}}</div>
+          <h2><a href="{{url}}" target="_blank" rel="noopener">{{title}}</a></h2>
+          <div>{{ai_summary}}</div>
+          <div><a class="cta" href="{{url}}" target="_blank" rel="noopener">Read article</a></div>
+        </div>
+      {{/each}}
+
+      <div class="footer">
+        <div>Sent with ❤️ — Newsletter generator</div>
+        <div>If you no longer want to receive this, unsubscribe or adjust preferences.</div>
+      </div>
+    </div>
+  </body>
+</html>

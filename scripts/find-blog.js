@@ -152,41 +152,154 @@ async function findBlogForRoot(api, browser, root, patterns) {
 
   const matchesFromSitemap = findMatches(allLocs, patterns);
 
-  // 3) If still nothing, open homepage and scan links
+  // 3) Open homepage to scan links (useful for both blog links and social profiles)
   let matchesFromHome = [];
-  if (matchesFromSitemap.length === 0) {
+  let socials = { x: [], linkedin: [] };
+  try {
     const page = await browser.newPage();
-    matchesFromHome = await findFromHomepage(page, root, patterns);
-    await page.close();
+    try {
+      matchesFromHome = await findFromHomepage(page, root, patterns);
+      // extract social links
+      const foundSocials = await getSocialsFromPage(page);
+      socials = foundSocials || socials;
+    } finally {
+      await page.close();
+    }
+  } catch (e) {
+    // ignore homepage errors
   }
 
   return {
     sitemap: matchesFromSitemap,
-    homepage: matchesFromHome
+    homepage: matchesFromHome,
+    socials
   };
 }
 
-async function main() {
-  const arg = process.argv[2];
-  if (!arg) {
-    console.error('Usage: node scripts/find-blog.js <config.json|configs/sites.json>');
-    console.error('Config JSON example: { "url": "https://example.com", "patterns": ["/blog","/posts"] }');
-    process.exitCode = 2;
-    return;
-  }
-
-  // Read JSON config file (can be an object or an array of objects)
-  let rawJson;
+// Extract social profile links (X/Twitter and LinkedIn) from an already-open Playwright page
+async function getSocialsFromPage(page) {
   try {
-    const raw = await fs.readFile(arg, 'utf8');
-    rawJson = JSON.parse(raw);
-  } catch (err) {
-    console.error('Failed to read or parse config JSON:', err && err.message ? err.message : err);
+    // Collect anchor hrefs and meta tags
+    const hrefs = await page.$$eval('a[href]', els => els.map(a => a.href).filter(Boolean));
+    const metas = await page.$$eval('meta[name], meta[property]', els => els.map(m => ({ name: m.getAttribute('name'), property: m.getAttribute('property'), content: m.getAttribute('content') })));
+
+    const xCandidates = new Set();
+    const linkedinCandidates = new Set();
+
+    // Inspect meta tags for Twitter/X handles
+    for (const m of metas) {
+      const n = (m.name || m.property || '').toLowerCase();
+      if (n === 'twitter:site' || n === 'twitter:creator' || n === 'al:ios:app_name') {
+        if (m.content) {
+          // twitter:site often has @handle
+          const h = (m.content || '').trim();
+          if (h.startsWith('@')) xCandidates.add('https://x.com/' + h.slice(1));
+        }
+      }
+      if (n === 'linkedin' || n === 'article:author') {
+        if (m.content && String(m.content).includes('linkedin.com')) linkedinCandidates.add(m.content.trim());
+      }
+    }
+
+    // Inspect hrefs
+    for (const h of hrefs) {
+      try {
+        const u = new URL(h);
+        const host = (u.hostname || '').toLowerCase();
+        if (host === 'x.com' || host === 'twitter.com' || host.endsWith('.twitter.com')) {
+          // path like /handle or /i/...
+          const parts = u.pathname.split('/').filter(Boolean);
+          if (parts.length) {
+            const handle = parts[0];
+            if (handle && handle.toLowerCase() !== 'intent' && handle.toLowerCase() !== 'share') {
+              xCandidates.add(`${u.protocol}//${u.hostname}/${handle}`);
+            }
+          }
+        }
+        if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) {
+          // keep full profile/company path
+          const pathstr = u.pathname.replace(/\/$/, '');
+          if (pathstr && (pathstr.startsWith('/in/') || pathstr.startsWith('/company/') || pathstr.startsWith('/pub/')) ) {
+            linkedinCandidates.add(`${u.protocol}//${u.hostname}${pathstr}`);
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    return {
+      x: Array.from(xCandidates),
+      linkedin: Array.from(linkedinCandidates)
+    };
+  } catch (e) {
+    return { x: [], linkedin: [] };
+  }
+}
+
+async function main() {
+  const sitesArg = process.argv[2];
+  const patternsArg = process.argv[3];
+  if (!sitesArg) {
+    console.error('Usage: node scripts/find-blog.js <sites.json> [patterns.json]');
+    console.error('`sites.json` should be an array of site URLs (strings).');
+    console.error('Optional `patterns.json` should be an array of path fragments, e.g. ["/blog","/posts"].');
     process.exitCode = 2;
     return;
   }
 
-  const configs = Array.isArray(rawJson) ? rawJson : [rawJson];
+  // Read sites file (array of URLs) or legacy config
+  let sitesRaw;
+  try {
+    const raw = await fs.readFile(sitesArg, 'utf8');
+    sitesRaw = JSON.parse(raw);
+  } catch (err) {
+    console.error('Failed to read or parse sites JSON:', err && err.message ? err.message : err);
+    process.exitCode = 2;
+    return;
+  }
+
+  // Read patterns file if provided, else try default location or use built-in defaults
+  let patterns = ['/blog', '/posts'];
+  if (patternsArg) {
+    try {
+      const pRaw = JSON.parse(await fs.readFile(patternsArg, 'utf8'));
+      if (Array.isArray(pRaw) && pRaw.length) patterns = pRaw;
+    } catch (e) {
+      console.error('Failed to read patterns JSON, using defaults:', e && e.message ? e.message : e);
+    }
+  } else {
+    // try configs/patterns.json next to repo
+    try {
+      const pPath = path.join(process.cwd(), 'configs', 'patterns.json');
+      const pRaw = JSON.parse(await fs.readFile(pPath, 'utf8'));
+      if (Array.isArray(pRaw) && pRaw.length) patterns = pRaw;
+    } catch (e) {
+      // ignore, keep defaults
+    }
+  }
+
+  // Normalize into configs array of objects { url, patterns }
+  let configs;
+  if (Array.isArray(sitesRaw) && sitesRaw.length && typeof sitesRaw[0] === 'string') {
+    configs = sitesRaw.map(u => ({ url: u, patterns }));
+  } else if (Array.isArray(sitesRaw) && sitesRaw.length && typeof sitesRaw[0] === 'object') {
+    // legacy format: array of objects
+    configs = sitesRaw.map(cfg => ({ url: cfg.url || cfg.site || cfg.root, patterns: Array.isArray(cfg.patterns) && cfg.patterns.length ? cfg.patterns : patterns, rootOnly: typeof cfg.rootOnly === 'boolean' ? cfg.rootOnly : true }));
+  } else if (typeof sitesRaw === 'object' && sitesRaw !== null) {
+    // single object
+    const cfg = sitesRaw;
+    const urls = cfg.sites || cfg.urls || cfg.list || [];
+    if (Array.isArray(urls) && urls.length) {
+      configs = urls.map(u => ({ url: u, patterns: cfg.patterns && cfg.patterns.length ? cfg.patterns : patterns }));
+    } else {
+      configs = [{ url: cfg.url || cfg.site || cfg.root, patterns: cfg.patterns || patterns, rootOnly: typeof cfg.rootOnly === 'boolean' ? cfg.rootOnly : true }];
+    }
+  } else {
+    console.error('Unrecognized sites JSON format. Expect array of URLs or array of objects.');
+    process.exitCode = 2;
+    return;
+  }
 
   const api = await playwright.request.newContext();
   const browser = await playwright.chromium.launch({ headless: true });
@@ -222,15 +335,16 @@ async function main() {
   // Write results to output JSON. Priority: top-level rawJson.output, else use provided outputDir (CLI or config), else next to input file
   try {
     let outputPath = null;
-    if (rawJson && rawJson.output && typeof rawJson.output === 'string') {
-      outputPath = rawJson.output;
+    // allow sites JSON to specify output path for legacy configs
+    if (sitesRaw && typeof sitesRaw === 'object' && sitesRaw.output && typeof sitesRaw.output === 'string') {
+      outputPath = sitesRaw.output;
     } else {
-      const inPath = process.argv[2];
-      const cliOutDir = process.argv[3];
-      const cfgOutDir = rawJson && rawJson.outputDir && typeof rawJson.outputDir === 'string' ? rawJson.outputDir : null;
+      const inPath = sitesArg;
+      // CLI usage: node scripts/find-blog.js <sites.json> [patterns.json] [outputDir]
+      const cliOutDir = process.argv[4];
+      const cfgOutDir = (sitesRaw && sitesRaw.outputDir && typeof sitesRaw.outputDir === 'string') ? sitesRaw.outputDir : null;
       const base = path.basename(inPath, path.extname(inPath));
       const fileName = base + '.results.json';
-      // Default to a separate outputs subfolder for find-blog results when no outputDir is provided
       const defaultOutDir = path.resolve(process.cwd(), 'outputs', 'find-blog-results');
       const outDir = cliOutDir || cfgOutDir || defaultOutDir;
       await fs.mkdir(outDir, { recursive: true });

@@ -1,23 +1,5 @@
 [
-    {
-        "url": "https://cursor.com/",
-        "patterns": [
-            "/blog",
-            "/posts"
-        ]
-    },
-    {
-        "url": "https://composio.dev/",
-        "patterns": [
-            "/blog",
-            "/posts"
-        ]
-    },
-    {
-        "url": " https://wisprflow.ai/",
-        "patterns": [
-            "/blog",
-            "/posts"
-        ]
-    }
+  "https://cursor.com/",
+  "https://composio.dev/",
+  "https://wisprflow.ai/"
 ]

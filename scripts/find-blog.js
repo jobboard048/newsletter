@@ -101,17 +101,53 @@ async function findSitemapsFromRobots(api, rootUrl) {
   }
 }
 
+// Recursively fetch sitemap URLs and return discovered page URLs.
+async function fetchSitemapUrls(api, sitemapUrl, visited = new Set(), depth = 0) {
+  if (!sitemapUrl || depth > 6) return [];
+  try {
+    const norm = (new URL(sitemapUrl)).href;
+    if (visited.has(norm)) return [];
+    visited.add(norm);
+    const text = await fetchWithApi(api, norm).catch(() => null);
+    if (!text) return [];
+    const locs = extractLocsFromSitemap(text || '');
+    if (!locs || !locs.length) return [];
+
+    const pageUrls = [];
+    for (const l of locs) {
+      try {
+        const low = l.split('?')[0].toLowerCase();
+        // Strict: only recurse when the loc explicitly ends with .xml or .xml.gz
+        if (low.endsWith('.xml') || low.endsWith('.xml.gz')) {
+          const nested = await fetchSitemapUrls(api, l, visited, depth + 1);
+          if (nested && nested.length) pageUrls.push(...nested);
+        } else {
+          pageUrls.push(l);
+        }
+      } catch (e) {
+        // if URL parsing fails, treat as page URL
+        pageUrls.push(l);
+      }
+    }
+    return Array.from(new Set(pageUrls));
+  } catch (e) {
+    return [];
+  }
+}
+
 async function findFromHomepage(page, rootUrl, patterns) {
   try {
-    const res = await page.goto(rootUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    // Wait for network idle so client-side JS has run and links rendered
+    const res = await page.goto(rootUrl, { waitUntil: 'networkidle', timeout: 30000 });
     if (!res || res.status() >= 400) return [];
-    const hrefs = await page.$$eval('a[href]', els => els.map(a => a.getAttribute('href')));
-    const absolute = hrefs
-      .filter(Boolean)
-      .map(h => {
-        try { return new URL(h, rootUrl).href; } catch (e) { return null; }
-      })
-      .filter(Boolean);
+    // extra guard: ensure load state and a tiny pause for dynamic content
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(500);
+
+    // Resolve anchors using the DOM href (fully qualified) to capture JS-inserted links
+    const absolute = await page.$$eval('a[href]', els => els.map(a => {
+      try { return new URL(a.href, document.baseURI).href; } catch (e) { return null; }
+    }).filter(Boolean));
     return findMatches(absolute, patterns);
   } catch (e) {
     return [];
@@ -119,31 +155,21 @@ async function findFromHomepage(page, rootUrl, patterns) {
 }
 
 async function findBlogForRoot(api, browser, root, patterns) {
-  // 1) Try known sitemap locations
+  // 1) Try known sitemap locations (recursively follow nested sitemaps)
   const candidates = await getSitemapCandidates(root);
   let allLocs = [];
+  const visited = new Set();
   for (const c of candidates) {
-    const text = await fetchWithApi(api, c).catch(() => null);
-    if (text) {
-      const locs = extractLocsFromSitemap(text);
-      if (locs.length) allLocs = allLocs.concat(locs);
-      // If sitemap is an index, it may contain sitemap URLs; try to fetch them too
-      if (/sitemapindex/i.test(text)) {
-        const nested = extractLocsFromSitemap(text);
-        for (const s of nested) {
-          const t2 = await fetchWithApi(api, s).catch(() => null);
-          if (t2) allLocs = allLocs.concat(extractLocsFromSitemap(t2));
-        }
-      }
-    }
+    const locs = await fetchSitemapUrls(api, c, visited).catch(() => []);
+    if (locs && locs.length) allLocs = allLocs.concat(locs);
   }
 
   // 2) Look for sitemaps in robots.txt
   if (allLocs.length === 0) {
     const robotsSitemaps = await findSitemapsFromRobots(api, root);
     for (const s of robotsSitemaps) {
-      const t = await fetchWithApi(api, s).catch(() => null);
-      if (t) allLocs = allLocs.concat(extractLocsFromSitemap(t));
+      const locs = await fetchSitemapUrls(api, s, visited).catch(() => []);
+      if (locs && locs.length) allLocs = allLocs.concat(locs);
     }
   }
 
@@ -179,29 +205,14 @@ async function findBlogForRoot(api, browser, root, patterns) {
 // Extract social profile links (X/Twitter and LinkedIn) from an already-open Playwright page
 async function getSocialsFromPage(page) {
   try {
-    // Collect anchor hrefs and meta tags
-    const hrefs = await page.$$eval('a[href]', els => els.map(a => a.href).filter(Boolean));
-    const metas = await page.$$eval('meta[name], meta[property]', els => els.map(m => ({ name: m.getAttribute('name'), property: m.getAttribute('property'), content: m.getAttribute('content') })));
+    // Restrict to footer anchors only: <footer>, [role="contentinfo"], or elements with id/class containing "footer"
+    const footerSelector = 'footer a[href], [role="contentinfo"] a[href], [id*="footer"] a[href], [class*="footer"] a[href]';
+    const hrefs = await page.$$eval(footerSelector, els => els.map(a => a.href).filter(Boolean));
 
     const xCandidates = new Set();
     const linkedinCandidates = new Set();
 
-    // Inspect meta tags for Twitter/X handles
-    for (const m of metas) {
-      const n = (m.name || m.property || '').toLowerCase();
-      if (n === 'twitter:site' || n === 'twitter:creator' || n === 'al:ios:app_name') {
-        if (m.content) {
-          // twitter:site often has @handle
-          const h = (m.content || '').trim();
-          if (h.startsWith('@')) xCandidates.add('https://x.com/' + h.slice(1));
-        }
-      }
-      if (n === 'linkedin' || n === 'article:author') {
-        if (m.content && String(m.content).includes('linkedin.com')) linkedinCandidates.add(m.content.trim());
-      }
-    }
-
-    // Inspect hrefs
+    // Inspect footer hrefs only
     for (const h of hrefs) {
       try {
         const u = new URL(h);
@@ -212,7 +223,8 @@ async function getSocialsFromPage(page) {
           if (parts.length) {
             const handle = parts[0];
             if (handle && handle.toLowerCase() !== 'intent' && handle.toLowerCase() !== 'share') {
-              xCandidates.add(`${u.protocol}//${u.hostname}/${handle}`);
+              const url = `${u.protocol}//${u.hostname}/${handle}`;
+              xCandidates.add(url);
             }
           }
         }
@@ -318,14 +330,14 @@ async function main() {
     const rootOnly = typeof cfg.rootOnly === 'boolean' ? cfg.rootOnly : true;
     console.log(`\n== Site ${i + 1}: ${root} ==`);
     try {
-      const res = await findBlogForRoot(api, browser, root, patterns);
-      const matches = (res.sitemap && res.sitemap.length) ? res.sitemap : (res.homepage && res.homepage.length ? res.homepage : []);
-      const strictMatches = findMatches(matches, patterns, rootOnly);
-      for (const m of strictMatches) console.log(m);
-      allResults.push({ url: root, patterns, rootOnly, matches: strictMatches });
+        const res = await findBlogForRoot(api, browser, root, patterns);
+        const matches = (res.sitemap && res.sitemap.length) ? res.sitemap : (res.homepage && res.homepage.length ? res.homepage : []);
+        const strictMatches = findMatches(matches, patterns, rootOnly);
+        for (const m of strictMatches) console.log(m);
+        allResults.push({ url: root, patterns, matches: strictMatches, socials: res.socials || { x: [], linkedin: [] } });
     } catch (err) {
       console.error(`#${i}: error processing site:`, err && err.message ? err.message : err);
-      allResults.push({ url: root, patterns, rootOnly, error: (err && err.message) ? err.message : String(err) });
+      allResults.push({ url: root, patterns, error: (err && err.message) ? err.message : String(err) });
     }
   }
 

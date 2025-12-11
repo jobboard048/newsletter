@@ -8,21 +8,12 @@
 const fs = require('fs').promises;
 const path = require('path');
 const playwright = require('playwright');
+try { require('dotenv').config(); } catch (e) {}
+const { OpenAI } = require('openai');
+const { requestStructured } = require('./utils/ai');
+const { z } = require('zod');
 
-function loadDefaultLists() {
-  return {
-    companies: [
-      'Google','Microsoft','Apple','Amazon','Meta','IBM','Intel','Nvidia','Samsung','Oracle',
-      'Uber','Airbnb','Stripe','Shopify','Salesforce','Tiktok','Twitter','Snapchat','Pinterest'
-    ],
-    funds: [
-      'Sequoia','Andreessen Horowitz','a16z','Accel','Benchmark','Index Ventures','Greylock',
-      'Bessemer','Kleiner Perkins','Union Square Ventures','Lightspeed','Founders Fund','GV','Insight'
-    ]
-  };
-}
-
-function normalizeName(n) { return (n || '').toLowerCase().replace(/\s+/g,' ').trim(); }
+// Default lists removed: this script uses OpenAI exclusively for company/fund detection.
 
 async function gatherInputUrls(inputPath) {
   const stat = await fs.stat(inputPath);
@@ -82,16 +73,11 @@ async function main() {
   const outArg = argv[1] || path.join('outputs','extracted-posts','mentions_results.json');
   const listsArg = argv[2] || null;
 
-  let lists = loadDefaultLists();
   if (listsArg) {
-    try { lists = Object.assign(lists, JSON.parse(await fs.readFile(listsArg, 'utf8'))); } catch (e) { console.error('Failed to load lists JSON, using defaults'); }
+    try {
+      console.error('Note: --lists-json provided but default lists are disabled; AI will be used exclusively.');
+    } catch (e) {}
   }
-
-  // Normalize lists
-  const companies = Array.from(new Set((lists.companies || []).map(normalizeName))).filter(Boolean);
-  const funds = Array.from(new Set((lists.funds || []).map(normalizeName))).filter(Boolean);
-
-  console.error(`Using ${companies.length} companies and ${funds.length} funds to search.`);
 
   const urls = await gatherInputUrls(inputArg);
   console.error(`Found ${urls.length} article URLs to scan.`);
@@ -101,8 +87,19 @@ async function main() {
     process.exit(1);
   }
 
+  // Require OpenAI API key — this script uses the model exclusively to detect company/fund names
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.error('OPENAI_API_KEY is required. This script uses OpenAI to detect company and fund names; default lists are disabled.');
+    process.exit(2);
+  }
+  const client = new OpenAI({ apiKey });
+
   const browser = await playwright.chromium.launch({ headless: true });
   const page = await browser.newPage();
+
+  // Zod schema for AI response
+  const aiSchema = z.object({ companies: z.array(z.string()).optional(), funds: z.array(z.string()).optional() });
 
   const results = [];
   for (let i=0;i<urls.length;i++) {
@@ -121,16 +118,41 @@ async function main() {
       const entry = { url, sourceFile: item.sourceFile || null, companies: [], funds: [] };
 
       const lowText = (text || '').toLowerCase();
-      for (const c of companies) {
-        if (lowText.includes(c)) {
-          entry.companies.push({ name: c, snippets: findSnippets(text, c) });
+
+      // If OpenAI client is available, ask it to extract company and fund names mentioned in the article.
+      if (client) {
+        const prompt = `Extract all unique tech company names and VC/fund names mentioned in the following article text. ` +
+          `Return a JSON object with two arrays: \"companies\" and \"funds\". Only return JSON, nothing else.\n\n` +
+          `Article text:\n"""\n${text.slice(0, 20000)}\n"""\n\n` +
+          `Notes: normalize names (do not include extra punctuation), include company names (products/brands owned by companies may be included), and include well-known VC funds.`;
+
+        try {
+          const aiRes = await requestStructured(client, prompt, aiSchema, { maxAttempts: 3, temperature: 0.2 });
+          if (aiRes && aiRes.data) {
+            const aiCompanies = Array.isArray(aiRes.data.companies) ? aiRes.data.companies : [];
+            const aiFunds = Array.isArray(aiRes.data.funds) ? aiRes.data.funds : [];
+            for (const c of aiCompanies) {
+              const name = (c || '').trim();
+              if (!name) continue;
+              entry.companies.push({ name, snippets: findSnippets(text, name) });
+            }
+            for (const f of aiFunds) {
+              const name = (f || '').trim();
+              if (!name) continue;
+              entry.funds.push({ name, snippets: findSnippets(text, name) });
+            }
+            // Optionally log AI raw output for debugging
+            if (aiRes.raw) entry.ai_raw = aiRes.raw;
+          } else {
+            console.error('AI extraction failed or returned no data; falling back to static lists.');
+            // fallback to static lists below
+          }
+        } catch (e) {
+          console.error('AI extraction error:', e && e.message ? e.message : e);
         }
       }
-      for (const f of funds) {
-        if (lowText.includes(f)) {
-          entry.funds.push({ name: f, snippets: findSnippets(text, f) });
-        }
-      }
+
+      // If AI returned empty arrays, leave companies/funds empty (we do not use static lists)
 
       results.push(entry);
     } catch (e) {

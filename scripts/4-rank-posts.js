@@ -170,13 +170,26 @@ async function main() {
       item.ai_score = (typeof ai.score === 'number') ? Number(ai.score) : null;
       item.ai_summary = ai.summary || '';
       item.ai_raw = ai.raw || null;
-
-      // Aggregate usage if present
+      // Aggregate usage if present and show per-request token costs
       if (ai.usage) {
         const u = ai.usage;
         const inTokens = typeof u.input_tokens === 'number' ? u.input_tokens : (typeof u.prompt_tokens === 'number' ? u.prompt_tokens : 0);
         const outTokens = typeof u.output_tokens === 'number' ? u.output_tokens : (typeof u.completion_tokens === 'number' ? u.completion_tokens : 0);
         const tot = typeof u.total_tokens === 'number' ? u.total_tokens : (inTokens + outTokens);
+
+        // Pricing env vars (per 1,000,000 tokens, USD). Accept multiple env names for convenience.
+        const priceInputPer1M = Number(process.env.TOKEN_PRICE_INPUT_PER_1M || process.env.PRICE_PER_1M_INPUT || 0);
+        const priceOutputPer1M = Number(process.env.TOKEN_PRICE_OUTPUT_PER_1M || process.env.PRICE_PER_1M_OUTPUT || 0);
+        const costInput = priceInputPer1M ? (inTokens / 1000000) * priceInputPer1M : 0;
+        const costOutput = priceOutputPer1M ? (outTokens / 1000000) * priceOutputPer1M : 0;
+        const costTotal = costInput + costOutput;
+
+        // Log per-request token usage and estimated cost
+        console.error(`[AI] ${url} — tokens: input=${inTokens} output=${outTokens} total=${tot} — estimated cost: $${costTotal.toFixed(8)}`);
+
+        // attach usage & cost to item for later inspection
+        item.ai_usage = { input_tokens: inTokens, output_tokens: outTokens, total_tokens: tot, cost_input: costInput, cost_output: costOutput, cost_total: costTotal };
+
         totals.input_tokens += inTokens;
         totals.output_tokens += outTokens;
         totals.total_tokens += tot;

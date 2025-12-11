@@ -7,6 +7,17 @@ const zlib = require('zlib');
 const fs = require('fs').promises;
 const path = require('path');
 
+// Resolve repository root (one level above this `scripts` directory)
+const repoRoot = path.resolve(__dirname, '..');
+
+// Helper to turn CLI/config paths into absolute paths.
+// By default, resolve relative CLI paths against the current working directory
+// and config paths relative to the repo root when appropriate.
+function toAbsolute(p, base = process.cwd()) {
+  if (!p) return null;
+  return path.isAbsolute(p) ? p : path.resolve(base, p);
+}
+
 function ensureUrl(input) {
   try {
     return new URL(input).href;
@@ -250,15 +261,10 @@ async function getSocialsFromPage(page) {
 }
 
 async function main() {
-  const sitesArg = process.argv[2];
-  const patternsArg = process.argv[3];
-  if (!sitesArg) {
-    console.error('Usage: node scripts/find-blog.js <sites.json> [patterns.json]');
-    console.error('`sites.json` should be an array of site URLs (strings).');
-    console.error('Optional `patterns.json` should be an array of path fragments, e.g. ["/blog","/posts"].');
-    process.exitCode = 2;
-    return;
-  }
+  // Always use the repository configs/sites.json as the input list of sites
+  const sitesArg = path.join(repoRoot, 'configs', 'sites.json');
+  // Optional patterns file may be provided as the first CLI argument
+  const patternsArg = process.argv[2] ? toAbsolute(process.argv[2]) : null;
 
   // Read sites file (array of URLs) or legacy config
   let sitesRaw;
@@ -280,10 +286,10 @@ async function main() {
     } catch (e) {
       console.error('Failed to read patterns JSON, using defaults:', e && e.message ? e.message : e);
     }
-  } else {
+    } else {
     // try configs/patterns.json next to repo
     try {
-      const pPath = path.join(process.cwd(), 'configs', 'patterns.json');
+      const pPath = path.join(repoRoot, 'configs', 'patterns.json');
       const pRaw = JSON.parse(await fs.readFile(pPath, 'utf8'));
       if (Array.isArray(pRaw) && pRaw.length) patterns = pRaw;
     } catch (e) {
@@ -352,12 +358,12 @@ async function main() {
       outputPath = sitesRaw.output;
     } else {
       const inPath = sitesArg;
-      // CLI usage: node scripts/find-blog.js <sites.json> [patterns.json] [outputDir]
-      const cliOutDir = process.argv[4];
-      const cfgOutDir = (sitesRaw && sitesRaw.outputDir && typeof sitesRaw.outputDir === 'string') ? sitesRaw.outputDir : null;
-      const base = path.basename(inPath, path.extname(inPath));
-      const fileName = base + '.results.json';
-      const defaultOutDir = path.resolve(process.cwd(), 'outputs', 'find-blog-results');
+      // CLI usage: node scripts/1-find-blog-posts.js <sites.json> [patterns.json] [outputDir]
+      const cliOutDir = process.argv[4] ? toAbsolute(process.argv[4]) : null;
+      const cfgOutDir = (sitesRaw && sitesRaw.outputDir && typeof sitesRaw.outputDir === 'string') ? (path.isAbsolute(sitesRaw.outputDir) ? sitesRaw.outputDir : path.join(repoRoot, sitesRaw.outputDir)) : null;
+      // Save results to ./outputs/find-blog-posts/find-blog-posts.json by default
+      const fileName = 'find-blog-posts.json';
+      const defaultOutDir = path.resolve(repoRoot, 'outputs', 'find-blog-posts');
       const outDir = cliOutDir || cfgOutDir || defaultOutDir;
       await fs.mkdir(outDir, { recursive: true });
       outputPath = path.join(outDir, fileName);
@@ -369,7 +375,4 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error('Error:', err && err.message ? err.message : err);
-  process.exitCode = 1;
-});
+main()

@@ -75,8 +75,9 @@ async function callGpt5Nano(client, pageUrl, cleanedHtml) {
 }
 
 async function main() {
-  const inPath = process.argv[2] || path.join('outputs', 'sites.results.json');
-  const outDirArg = process.argv[3];
+  // Always use the finder output as input
+  const inPath = path.join(process.cwd(), 'outputs', 'find-blog-posts', 'find-blog-posts.json');
+  const outDirArg = process.argv[2];
   // Default to writing per-site files into `outputs/extracted-posts` unless a different directory is provided.
   const outDir = path.join(process.cwd(), outDirArg || path.join('outputs', 'extracted-posts'));
 

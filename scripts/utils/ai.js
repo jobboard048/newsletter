@@ -11,7 +11,7 @@ async function requestStructured(client, prompt, schemaZod, opts = {}) {
   // opts: { model, temperature, maxAttempts, service_tier, reasoning }
   const model = opts.model || 'gpt-5-nano';
   const maxAttempts = opts.maxAttempts || 3;
-  const service_tier = opts.service_tier || 'flex';
+  const service_tier = opts.service_tier || 'default';
   const reasoning = opts.reasoning || { effort: 'high' };
 
   function extractUsageFromResp(resp) {
